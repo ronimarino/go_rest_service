@@ -23,3 +23,11 @@
 
 phpMyAdmin is located on http://localhost:8081  ```root``` / ```root```.
 
+alternative (no docker, uses SQLlite):
+
+```go build```
+
+```./microservice```
+
+```ab -p test.json -T application/json -c 100 -n 10000 http://localhost:8080/process```
+
