@@ -8,92 +8,76 @@ import (
 const TICK = 1
 
 type WorkerManager struct {
-	Jobs []*Payload
+	Jobs    chan *Payload
+	LastJob *Payload
 }
 
-func (wm *WorkerManager) addDatapoint(dp *Payload) {
-	mu.Lock()
-	defer mu.Unlock()
-	wm.Jobs = append(wm.Jobs, dp)
+func (wm *WorkerManager) addDatapoint(p *Payload) {
+	wm.Jobs <- p
 }
 
 func (wm *WorkerManager) process() {
-	go func(wm *WorkerManager) {
+	go func() {
 		for {
-			if len(wm.Jobs) >= 100 {
-				mu.Lock()
-				jobs := wm.Jobs[:100]
-				wm.Jobs = wm.Jobs[100:]
-				mu.Unlock()
-				log.Println(len(jobs))
-				log.Println(len(wm.Jobs))
-
-				// sql := "INSERT into `datapoints` (timestamp, metric_id) VALUES "
-
-				// for _, p := range jobs {
-				// 	sql += fmt.Sprintf("(%d, %d),", p.Ts, mm.TS.ID)
-				// }
-
-				// sql = strings.TrimSuffix(sql, ",")
-
-				// db.Exec(sql)
-
-				// dpl := []*Datapoint{}
-				// var err error
-
-				// for _, p := range jobs {
-				// 	dp := &Datapoint{Timestamp: uint64(p.Ts), Metric: mm.TS}
-				// 	dpl = append(dpl, dp)
-				// }
-
-				// if err = db.CreateInBatches(dpl, 100).Error; err != nil {
-				// 	log.Println(err)
-				// }
-
-				// check := true
-				// for check {
-				// 	dplnew := []*Datapoint{}
-				// 	for _, dp := range dpl {
-				// 		if dp.ID == 0 {
-				// 			dplnew = append(dplnew, dp)
-				// 		}
-				// 	}
-
-				// 	if len(dplnew) == 0 {
-				// 		check = false
-				// 	} else {
-				// 		log.Println(len(dplnew))
-				// 		if err = db.CreateInBatches(dplnew, 100).Error; err != nil {
-				// 			log.Println(err)
-				// 		}
-				// 	}
-				// }
-
-				for _, p := range jobs {
-					go func(p *Payload) {
-						var err error
-						dp := &Datapoint{Timestamp: uint64(p.Ts), Metric: mm.TS}
-						mudb.Lock()
-						defer mudb.Unlock()
-						if err = db.Create(dp).Error; err != nil {
-							log.Println(err)
-						}
-						for err != nil || dp.ID == 0 {
-							if err = db.Create(dp).Error; err != nil {
-								log.Println(err)
-							}
-						}
-					}(p)
+			if len(wm.Jobs) >= 1000 {
+				jobs := []*Payload{}
+				for i := 0; i < 1000; i++ {
+					job := <-wm.Jobs
+					jobs = append(jobs, job)
 				}
-			} else {
-				time.Sleep(time.Second * TICK)
+				wm.saveBatch(jobs)
+				log.Println(len(jobs))
 			}
+
+			time.Sleep(time.Millisecond * TICK * 100)
 		}
-	}(wm)
+	}()
+}
+
+func (wm *WorkerManager) saveBatch(jobs []*Payload) {
+	tx := db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	if err := tx.Error; err != nil {
+		log.Println(err)
+	}
+
+	diff := uint(0)
+
+	for _, job := range jobs {
+		var err error
+
+		if wm.LastJob != nil {
+			diff = wm.processDiff(job.Value, wm.LastJob.Value)
+		}
+
+		dp := &Datapoint{Timestamp: uint64(job.Ts), Metric: mm.TS, Value: uint(job.Value), Diff: uint(diff)}
+		if err = tx.Create(dp).Error; err != nil {
+			tx.Rollback()
+			log.Println(err)
+		}
+
+		wm.LastJob = job
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		log.Println(err)
+	}
+}
+
+func (wm *WorkerManager) processDiff(currentValue float64, lastValue float64) uint {
+	cvi := uint(currentValue * float64(100))
+	lvi := uint(lastValue * float64(100))
+	return cvi - lvi
 }
 
 func initWorkerManager() *WorkerManager {
 	wm := &WorkerManager{}
+	wm.Jobs = make(chan *Payload, 1000000)
 	wm.process()
 	return wm
 }
