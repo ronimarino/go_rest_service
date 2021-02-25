@@ -4,10 +4,14 @@ WORKDIR /microservice
 
 ADD . .
 
-RUN go mod download
+RUN apk update && apk add --virtual build-dependencies build-base gcc
 
-RUN ulimit -s 1048576
+RUN go mod download
 
 RUN go get github.com/githubnemo/CompileDaemon
 
-ENTRYPOINT CompileDaemon -command="./microservice"
+ENTRYPOINT CompileDaemon -graceful-kill=true -command="./microservice"
+
+# Use this when running go executable directly on golang:alpine
+# RUN apk add --no-cache \
+#         libc6-compat
